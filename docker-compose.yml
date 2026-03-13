@@ -1,0 +1,161 @@
+# Fixed docker-compose using only Docker Official Images (no bitnami)
+# All images are from docker.io/library/* - permanently stable tags
+
+services:
+
+  # ─── Spark Master (Docker Official Image) ─────────────────────────────────
+  spark-master:
+    image: spark:3.5.0-scala2.12-java17-ubuntu
+    container_name: spark-master
+    hostname: spark-master
+    entrypoint: ["/opt/spark/sbin/start-master.sh"]
+    command: []
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./data:/data
+      - ./spark_processing:/app/spark_processing
+      - ./spark_ml:/app/spark_ml
+      - ./spark_streaming:/app/spark_streaming
+      - ./data_parallelism:/app/data_parallelism
+      - ./mapreduce:/app/mapreduce
+    networks:
+      - banking_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ─── Spark Worker ──────────────────────────────────────────────────────────
+  spark-worker:
+    image: spark:3.5.0-scala2.12-java17-ubuntu
+    container_name: spark-worker
+    hostname: spark-worker
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    entrypoint: ["/opt/spark/sbin/start-worker.sh", "spark://spark-master:7077"]
+    command: []
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+      - SPARK_WORKER_MEMORY=2g
+      - SPARK_WORKER_CORES=2
+    volumes:
+      - ./data:/data
+    networks:
+      - banking_net
+
+  # ─── Jupyter with PySpark ──────────────────────────────────────────────────
+  jupyter:
+    image: jupyter/pyspark-notebook:latest
+    container_name: jupyter
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_TOKEN=banking123
+      - SPARK_MASTER=spark://spark-master:7077
+    volumes:
+      - ./data:/home/jovyan/data
+      - ./spark_processing:/home/jovyan/spark_processing
+      - ./spark_ml:/home/jovyan/spark_ml
+      - ./spark_streaming:/home/jovyan/spark_streaming
+      - ./data_parallelism:/home/jovyan/data_parallelism
+      - ./mapreduce:/home/jovyan/mapreduce
+    networks:
+      - banking_net
+
+  # ─── Hadoop NameNode ───────────────────────────────────────────────────────
+  namenode:
+    image: apache/hadoop:3
+    container_name: namenode
+    hostname: namenode
+    command: ["hdfs", "namenode"]
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    environment:
+      - HADOOP_HOME=/opt/hadoop
+      - CLUSTER_NAME=banking
+    volumes:
+      - namenode_data:/tmp/hadoop-root/dfs/name
+      - ./data:/data
+    networks:
+      - banking_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9870 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+
+  # ─── Hadoop DataNode ───────────────────────────────────────────────────────
+  datanode:
+    image: apache/hadoop:3
+    container_name: datanode
+    hostname: datanode
+    command: ["hdfs", "datanode"]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    environment:
+      - HADOOP_HOME=/opt/hadoop
+    volumes:
+      - datanode_data:/tmp/hadoop-root/dfs/data
+    networks:
+      - banking_net
+
+  # ─── Hive Metastore DB ────────────────────────────────────────────────────
+  hive-metastore-db:
+    image: postgres:15-alpine
+    container_name: hive-metastore-db
+    environment:
+      POSTGRES_DB: metastore_db
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive123
+    volumes:
+      - hive_db_data:/var/lib/postgresql/data
+    networks:
+      - banking_net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hive"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── Hive (all-in-one: metastore + hiveserver2) ───────────────────────────
+  hive:
+    image: apache/hive:4.0.0
+    container_name: hive
+    hostname: hive
+    depends_on:
+      namenode:
+        condition: service_healthy
+      hive-metastore-db:
+        condition: service_healthy
+    environment:
+      - SERVICE_NAME=hiveserver2
+      - HIVE_CUSTOM_CONF_DIR=/hive-config
+      - IS_RESUME=true
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    volumes:
+      - ./data:/data
+      - ./hadoop_hive/hive-site.xml:/opt/hive/conf/hive-site.xml
+    networks:
+      - banking_net
+
+volumes:
+  namenode_data:
+  datanode_data:
+  hive_db_data:
+
+networks:
+  banking_net:
+    driver: bridge
