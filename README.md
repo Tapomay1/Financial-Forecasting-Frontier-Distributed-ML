@@ -1,57 +1,67 @@
-# Financial Forecasting Frontier: Distributed ML
-## Setup & Execution Guide
+# 🚀 Financial Forecasting Frontier: Distributed ML
+
+### Setup & Execution Guide
 
 ---
 
-## DOCKER IMAGES USED (all stable official images)
+## 🧱 Tech Stack (Docker Images)
 
-| Service      | Image                                      | Source          |
-|--------------|--------------------------------------------|-----------------|
-| Spark        | spark:3.5.0-scala2.12-java17-ubuntu        | Docker Official |
-| Jupyter      | jupyter/pyspark-notebook:latest            | Jupyter Project |
-| Hadoop       | apache/hadoop:3                            | Apache Official |
-| Hive         | apache/hive:4.0.0                          | Apache Official |
-| PostgreSQL   | postgres:15-alpine                         | Docker Official |
+All services use stable, official images:
 
----
-
-## STEP 0 — PREREQUISITES
-
-Install **Docker Desktop** from https://www.docker.com/products/docker-desktop
-
-Open Docker Desktop → Settings → Resources:
-- Memory: **8 GB minimum** (10 GB recommended)
-- CPUs: 4
-- Click Apply & Restart
+| Service    | Image                               | Source          |
+| ---------- | ----------------------------------- | --------------- |
+| Spark      | spark:3.5.0-scala2.12-java17-ubuntu | Docker Official |
+| Jupyter    | jupyter/pyspark-notebook:latest     | Jupyter Project |
+| Hadoop     | apache/hadoop:3                     | Apache Official |
+| Hive       | apache/hive:4.0.0                   | Apache Official |
+| PostgreSQL | postgres:15-alpine                  | Docker Official |
 
 ---
 
-## STEP 1 — START THE CLUSTER
+## ⚙️ Prerequisites
 
-Open a terminal **inside the banking_project folder**:
+Install Docker Desktop:
+👉 https://www.docker.com/products/docker-desktop
+
+### Recommended Docker Settings
+
+* Memory: **8 GB minimum** (10 GB recommended)
+* CPUs: **4**
+* Apply changes and restart Docker
+
+---
+
+## 🟢 Step 1 — Start the Cluster
+
+Navigate to the project directory:
 
 ```bash
+cd banking_project
 docker compose up -d
 ```
 
-Wait for all containers to start (~3-5 min first time, downloads ~4 GB).
+⏳ First run may take 3–5 minutes (downloads ~4GB).
 
-Check status:
+### Verify containers
+
 ```bash
 docker compose ps
 ```
 
-Open Web UIs:
-- Spark Master:  http://localhost:8080
-- HDFS UI:       http://localhost:9870
-- Hive UI:       http://localhost:10002
-- Jupyter:       http://localhost:8888  (token: banking123)
+### Access Web Interfaces
+
+* Spark Master → http://localhost:8080
+* HDFS UI → http://localhost:9870
+* Hive UI → http://localhost:10002
+* Jupyter Notebook → http://localhost:8888
+
+  * Token: `banking123`
 
 ---
 
-## STEP 2 — HDFS SETUP
+## 🗂️ Step 2 — HDFS Setup
 
-Wait ~60 seconds after `docker compose up`, then:
+Wait ~60 seconds after cluster startup:
 
 ```bash
 bash hadoop_hive/setup_hdfs.sh
@@ -59,25 +69,20 @@ bash hadoop_hive/setup_hdfs.sh
 
 ---
 
-## STEP 3 — HIVE QUERIES
+## 🐝 Step 3 — Run Hive Queries
 
 ```bash
-# Copy SQL file into container
 docker cp data/hive_queries.sql hive:/data/hive_queries.sql
 
-# Open Hive shell
 docker exec -it hive beeline -u 'jdbc:hive2://localhost:10000'
 
-# Inside beeline, run all queries:
 !run /data/hive_queries.sql
-
-# Exit
 !quit
 ```
 
 ---
 
-## STEP 4 — SPARK DATA PROCESSING
+## ⚡ Step 4 — Spark Data Processing
 
 ```bash
 docker exec spark-master /opt/spark/bin/spark-submit \
@@ -87,7 +92,7 @@ docker exec spark-master /opt/spark/bin/spark-submit \
 
 ---
 
-## STEP 5 — SPARK ML
+## 🤖 Step 5 — Spark ML Pipeline
 
 ```bash
 docker exec spark-master /opt/spark/bin/spark-submit \
@@ -97,23 +102,25 @@ docker exec spark-master /opt/spark/bin/spark-submit \
 
 ---
 
-## STEP 6 — SPARK STREAMING
+## 📡 Step 6 — Spark Streaming
 
-**Terminal 1:**
+### Terminal 1 (Streaming App)
+
 ```bash
 docker exec spark-master /opt/spark/bin/spark-submit \
   --master spark://spark-master:7077 \
   /app/spark_streaming/spark_streaming.py
 ```
 
-**Terminal 2 (new window):**
+### Terminal 2 (Data Generator)
+
 ```bash
 docker exec spark-master python3 /app/spark_streaming/stream_simulator.py
 ```
 
 ---
 
-## STEP 7 — DATA PARALLELISM
+## ⚙️ Step 7 — Data Parallelism
 
 ```bash
 docker exec spark-master /opt/spark/bin/spark-submit \
@@ -123,37 +130,66 @@ docker exec spark-master /opt/spark/bin/spark-submit \
 
 ---
 
-## STEP 8 — MAPREDUCE
+## 🧮 Step 8 — MapReduce
 
-**Local Python (no Hadoop needed):**
+### Option 1: Local Execution (Recommended)
+
 ```bash
 python mapreduce/mr_runner.py
 ```
 
-**OR via Hadoop Streaming:**
+### Option 2: Hadoop Streaming
+
 ```bash
 docker exec namenode hdfs dfs -mkdir -p /user/hadoop/output
 docker cp mapreduce/mr_runner.py namenode:/tmp/mr_runner.py
-# Run each MR job - see generate_mr_scripts.py for Hadoop Streaming commands
 ```
+
+Refer to `generate_mr_scripts.py` for detailed Hadoop streaming commands.
 
 ---
 
-## STOP THE CLUSTER
+## 🛑 Stopping the Cluster
 
 ```bash
-docker compose stop          # pause (keeps data)
-docker compose down -v       # full reset (deletes volumes)
+docker compose stop        # Pause (keeps data)
+docker compose down -v     # Full reset (removes volumes)
 ```
 
 ---
 
-## TROUBLESHOOTING
+## 🧰 Troubleshooting Guide
 
-| Error | Fix |
-|-------|-----|
-| `image not found` for bitnami/spark | You have an old docker-compose.yml — use the latest one (uses `spark:3.5.0-...`) |
-| NameNode SafeMode won't exit | Run `docker exec namenode hdfs dfsadmin -safemode forceExit` |
-| Hive connection refused | Wait 2 min for Hive to initialise, retry |
-| Spark OOM | Set Docker memory to 10 GB in Docker Desktop Settings |
-| Port in use | Edit the left side of the port mapping in docker-compose.yml |
+| Issue                      | Solution                                                 |
+| -------------------------- | -------------------------------------------------------- |
+| Spark image not found      | Ensure latest `docker-compose.yml` is used               |
+| NameNode stuck in SafeMode | `docker exec namenode hdfs dfsadmin -safemode forceExit` |
+| Hive connection refused    | Wait ~2 minutes, then retry                              |
+| Spark Out of Memory        | Increase Docker memory to 10 GB                          |
+| Port already in use        | Modify port mapping in `docker-compose.yml`              |
+
+---
+
+## 📌 Notes
+
+* First run is slow due to image downloads.
+* Streaming requires **two terminals** (app + simulator).
+* Ensure Docker has enough memory before running Spark ML.
+
+---
+
+## ✅ Project Workflow Summary
+
+1. Start cluster
+2. Load data into HDFS
+3. Run Hive analytics
+4. Execute Spark batch processing
+5. Train ML models
+6. Run streaming pipeline
+7. Test MapReduce jobs
+
+---
+
+## 🎯 You're Ready!
+
+Your distributed ML pipeline is now fully operational 🚀
