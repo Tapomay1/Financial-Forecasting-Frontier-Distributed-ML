@@ -1,0 +1,101 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+.jupyter/
+
+# Data files
+*.csv
+*.parquet
+*.feather
+*.pickle
+*.pkl
+data/
+
+# Logs
+*.log
+logs/
+
+# Models and checkpoints
+*.model
+*.h5
+*.pkl
+*.joblib
+checkpoints/
+
+# Spark
+*.warehouse/
+metastore_db/
+
+# Hadoop
+*.hdfs/
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Environment variables
+.env
+.env.local
+
+# IDE settings
+.project
+.pydevproject
+.settings/
+
+# macOS
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+$RECYCLE.BIN/
+ehthumbs.db
