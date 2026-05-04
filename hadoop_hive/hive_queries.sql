@@ -1,117 +1,167 @@
--- ============================================================
--- HIVE SCRIPTS - Banking Data Analysis
--- Run these inside hiveserver2 container:
---   docker exec -it hiveserver2 beeline -u jdbc:hive2://localhost:10000
--- ============================================================
+-- ============================================================================
+-- HIVE SCRIPT: Banking Data Analysis (Refactored Version)
+-- Run inside HiveServer2 using Beeline
+-- ============================================================================
 
--- ─── 1. Data Ingestion and Table Creation ────────────────────────────
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 1. DATABASE SETUP & DATA INGESTION
+-- ────────────────────────────────────────────────────────────────────────────
 
 CREATE DATABASE IF NOT EXISTS banking_data;
+
 USE banking_data;
 
+-- Create main table for client dataset
 CREATE TABLE IF NOT EXISTS client_info (
-    age        INT,
-    job        STRING,
-    marital    STRING,
-    education  STRING,
-    default_   STRING,
-    balance    INT,
-    housing    STRING,
-    loan       STRING,
-    contact    STRING,
-    day        INT,
-    month      STRING,
-    duration   INT,
-    campaign   INT,
-    pdays      INT,
-    previous   INT,
-    poutcome   STRING,
-    y          STRING
+    age         INT,
+    job         STRING,
+    marital     STRING,
+    education   STRING,
+    default_    STRING,
+    balance     INT,
+    housing     STRING,
+    loan        STRING,
+    contact     STRING,
+    day         INT,
+    month       STRING,
+    duration    INT,
+    campaign    INT,
+    pdays       INT,
+    previous    INT,
+    poutcome    STRING,
+    y           STRING
 )
 ROW FORMAT DELIMITED
 FIELDS TERMINATED BY ','
 STORED AS TEXTFILE
-TBLPROPERTIES ("skip.header.line.count"="1");
-
--- Load data from HDFS (after uploading with: hdfs dfs -put /data/bank.csv /user/hive/)
-LOAD DATA INPATH '/user/hive/bank.csv' INTO TABLE client_info;
+TBLPROPERTIES ("skip.header.line.count" = "1");
 
 
--- ─── 2. Basic Data Exploration ───────────────────────────────────────
-
--- Count total number of clients
-SELECT COUNT(*) AS total_clients FROM client_info;
-
--- Display first 10 rows
-SELECT * FROM client_info LIMIT 10;
+-- Load dataset from HDFS
+-- (Ensure file exists: /user/hive/bank.csv)
+LOAD DATA INPATH '/user/hive/bank.csv'
+INTO TABLE client_info;
 
 
--- ─── 3. Data Filtering and Sorting ───────────────────────────────────
 
--- Married clients with a personal loan
-SELECT * FROM client_info
-WHERE marital = 'married' AND loan = 'yes';
+-- ────────────────────────────────────────────────────────────────────────────
+-- 2. BASIC DATA EXPLORATION
+-- ────────────────────────────────────────────────────────────────────────────
 
--- Top 10 clients with highest balance
-SELECT job, marital, balance
+-- Total number of records
+SELECT
+    COUNT(*) AS total_clients
+FROM client_info;
+
+
+-- Preview sample data
+SELECT *
+FROM client_info
+LIMIT 10;
+
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- 3. FILTERING & SORTING
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- Married clients who have an active loan
+SELECT *
+FROM client_info
+WHERE marital = 'married'
+  AND loan = 'yes';
+
+
+-- Top 10 clients by account balance
+SELECT
+    job,
+    marital,
+    balance
 FROM client_info
 ORDER BY balance DESC
 LIMIT 10;
 
 
--- ─── 4. Data Aggregation and Grouping ────────────────────────────────
 
--- Average age per job category
-SELECT job, ROUND(AVG(age), 2) AS avg_age
+-- ────────────────────────────────────────────────────────────────────────────
+-- 4. AGGREGATION & GROUPING
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- Average age across job categories
+SELECT
+    job,
+    ROUND(AVG(age), 2) AS avg_age
 FROM client_info
 GROUP BY job
 ORDER BY avg_age DESC;
 
--- Total clients per education level who defaulted
-SELECT education, COUNT(*) AS default_count
+
+-- Count of defaulted clients per education level
+SELECT
+    education,
+    COUNT(*) AS default_count
 FROM client_info
 WHERE default_ = 'yes'
 GROUP BY education
 ORDER BY default_count DESC;
 
 
--- ─── 5. Complex Queries for Insights ─────────────────────────────────
 
--- Top 5 job categories with highest average balance + subscription %
+-- ────────────────────────────────────────────────────────────────────────────
+-- 5. BUSINESS INSIGHTS (COMPLEX QUERIES)
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- Top 5 job roles by average balance + subscription success rate
 SELECT
     job,
-    ROUND(AVG(balance), 2)                                        AS avg_balance,
-    ROUND(SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*), 2)                                          AS subscription_pct
+    ROUND(AVG(balance), 2) AS avg_balance,
+    ROUND(
+        SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END) * 100.0
+        / COUNT(*),
+        2
+    ) AS subscription_rate_pct
 FROM client_info
 GROUP BY job
 ORDER BY avg_balance DESC
 LIMIT 5;
 
--- Month with highest contacts + campaign success rate
+
+-- Month with highest engagement + campaign success rate
 SELECT
     month,
-    COUNT(*)                                                      AS total_contacts,
-    ROUND(SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*), 2)                                         AS success_rate_pct
+    COUNT(*) AS total_contacts,
+    ROUND(
+        SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END) * 100.0
+        / COUNT(*),
+        2
+    ) AS success_rate_pct
 FROM client_info
 GROUP BY month
 ORDER BY total_contacts DESC
 LIMIT 1;
 
 
--- ─── 6. Correlation Analysis ─────────────────────────────────────────
 
--- Correlation between age and balance
+-- ────────────────────────────────────────────────────────────────────────────
+-- 6. CORRELATION ANALYSIS
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- Relationship between age and account balance
 SELECT
-    CORR(age, balance) AS age_balance_correlation
+    CORR(age, balance) AS age_balance_corr
 FROM client_info;
 
 
--- ─── 7. Trend Analysis ───────────────────────────────────────────────
 
--- Contacts per month (proxy for year-over-year trend using month ordering)
-SELECT month, COUNT(*) AS contacts_count
+-- ────────────────────────────────────────────────────────────────────────────
+-- 7. TEMPORAL TREND ANALYSIS
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- Monthly contact distribution (ordered chronologically)
+SELECT
+    month,
+    COUNT(*) AS contact_volume
 FROM client_info
 GROUP BY month
 ORDER BY
@@ -123,36 +173,52 @@ ORDER BY
     END;
 
 
--- ─── 8. Anomaly Detection ────────────────────────────────────────────
 
--- Average yearly balance across education levels (flag outliers)
+-- ────────────────────────────────────────────────────────────────────────────
+-- 8. ANOMALY & VARIABILITY ANALYSIS
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- Balance distribution metrics by education category
 SELECT
     education,
-    ROUND(AVG(balance), 2)  AS avg_balance,
-    ROUND(STDDEV(balance), 2) AS stddev_balance,
-    MIN(balance)             AS min_balance,
-    MAX(balance)             AS max_balance
+    ROUND(AVG(balance), 2)     AS avg_balance,
+    ROUND(STDDEV(balance), 2)  AS stddev_balance,
+    MIN(balance)               AS min_balance,
+    MAX(balance)               AS max_balance
 FROM client_info
 GROUP BY education
 ORDER BY avg_balance DESC;
 
 
--- ─── 9. Advanced Analysis ────────────────────────────────────────────
 
--- Impact of previous campaign outcome on current subscription rate
+-- ────────────────────────────────────────────────────────────────────────────
+-- 9. ADVANCED ANALYTICS
+-- ────────────────────────────────────────────────────────────────────────────
+
+-- Effect of previous campaign outcomes on current subscription
 SELECT
     poutcome,
-    COUNT(*)                                                      AS total,
-    SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END)                   AS subscribed,
-    ROUND(SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END) * 100.0
-          / COUNT(*), 2)                                          AS subscription_rate_pct
+    COUNT(*) AS total_clients,
+    SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END) AS subscribed_clients,
+    ROUND(
+        SUM(CASE WHEN y = 'yes' THEN 1 ELSE 0 END) * 100.0
+        / COUNT(*),
+        2
+    ) AS subscription_rate_pct
 FROM client_info
 GROUP BY poutcome
 ORDER BY subscription_rate_pct DESC;
 
--- Average contact duration: subscribed vs not subscribed
+
+-- Average call duration grouped by subscription outcome
 SELECT
-    y                           AS subscribed,
-    ROUND(AVG(duration), 2)     AS avg_duration_secs
+    y AS subscription_status,
+    ROUND(AVG(duration), 2) AS avg_call_duration
 FROM client_info
 GROUP BY y;
+
+
+
+-- ============================================================================
+-- END OF SCRIPT
+-- ============================================================================

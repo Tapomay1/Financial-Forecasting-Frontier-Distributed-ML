@@ -1,196 +1,288 @@
+#!/usr/bin/env python3
 """
-SPARK STREAMING – Real-Time Banking Transaction Analysis
-Covers all Spark Streaming questions from the project.
+SPARK STREAMING – Real-Time Banking Analytics (Refactored)
 
-Two steps:
-  1. Run this script (starts the streaming app)
-  2. In another terminal, run stream_simulator.py to feed data
-
-Run streaming app:
-  docker exec spark-master spark-submit \
-    --master spark://spark-master:7077 \
-    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0 \
-    /app/spark_streaming/spark_streaming.py
+Features:
+- Stream ingestion
+- Real-time aggregation
+- ML predictions on streaming data
+- Window-based analytics
+- Watermark handling for late data
 """
 
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    StructType, StructField, StringType, IntegerType, DoubleType, TimestampType
-)
+from pyspark.sql import SparkSession, functions as F
+from pyspark.sql.types import *
 from pyspark.ml import Pipeline
-from pyspark.ml.feature import StringIndexer, OneHotEncoder, VectorAssembler, StandardScaler
+from pyspark.ml.feature import (
+    StringIndexer, OneHotEncoder,
+    VectorAssembler, StandardScaler
+)
 from pyspark.ml.classification import RandomForestClassifier
 import os
 
-# ─── Spark Session ────────────────────────────────────────────────────────────
-spark = SparkSession.builder \
-    .appName("BankingStreamProcessing") \
-    .master("spark://spark-master:7077") \
-    .config("spark.sql.shuffle.partitions", "4") \
-    .config("spark.sql.streaming.checkpointLocation", "/tmp/checkpoint") \
-    .getOrCreate()
-spark.sparkContext.setLogLevel("WARN")
 
-# ─── Define schema ────────────────────────────────────────────────────────────
-SCHEMA = StructType([
-    StructField("age",       IntegerType(), True),
-    StructField("job",       StringType(),  True),
-    StructField("marital",   StringType(),  True),
-    StructField("education", StringType(),  True),
-    StructField("default",   StringType(),  True),
-    StructField("balance",   IntegerType(), True),
-    StructField("housing",   StringType(),  True),
-    StructField("loan",      StringType(),  True),
-    StructField("contact",   StringType(),  True),
-    StructField("day",       IntegerType(), True),
-    StructField("month",     StringType(),  True),
-    StructField("duration",  IntegerType(), True),
-    StructField("campaign",  IntegerType(), True),
-    StructField("pdays",     IntegerType(), True),
-    StructField("previous",  IntegerType(), True),
-    StructField("poutcome",  StringType(),  True),
-    StructField("y",         StringType(),  True),
-    StructField("event_time", TimestampType(), True),
-])
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
+DATA_PATH = "/data/bank.csv"
+STREAM_DIR = "/data/stream"
+CHECKPOINT_DIR = "/tmp/checkpoint"
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STEP A – Pre-train ML model on historical data
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n=== Pre-training ML model on historical data ===")
+CAT_COLS = [
+    "job", "marital", "education", "default",
+    "housing", "loan", "contact", "month", "poutcome"
+]
 
-hist_df = spark.read.csv("/data/bank.csv", header=True, inferSchema=True)
-hist_df = hist_df.withColumn("pdays",
-    F.when(F.col("pdays") == -1, 0).otherwise(F.col("pdays")))
+NUM_COLS = [
+    "age", "balance", "day", "duration",
+    "campaign", "pdays", "previous"
+]
 
-CAT_COLS = ["job", "marital", "education", "default", "housing",
-            "loan", "contact", "month", "poutcome"]
-NUM_COLS = ["age", "balance", "day", "duration", "campaign", "pdays", "previous"]
 
-indexers   = [StringIndexer(inputCol=c, outputCol=c+"_idx", handleInvalid="keep") for c in CAT_COLS]
-encoder    = OneHotEncoder(inputCols=[c+"_idx" for c in CAT_COLS],
-                           outputCols=[c+"_ohe" for c in CAT_COLS])
-lbl_idx    = StringIndexer(inputCol="y", outputCol="label")
-assembler  = VectorAssembler(inputCols=[c+"_ohe" for c in CAT_COLS] + NUM_COLS,
-                             outputCol="features_raw")
-scaler     = StandardScaler(inputCol="features_raw", outputCol="features",
-                            withMean=False, withStd=True)
-rf         = RandomForestClassifier(labelCol="label", featuresCol="features",
-                                    numTrees=50, maxDepth=5, seed=42)
+# ─────────────────────────────────────────────────────────────────────────────
+# SPARK SESSION
+# ─────────────────────────────────────────────────────────────────────────────
+def create_spark():
+    spark = (
+        SparkSession.builder
+        .appName("BankingStreamProcessing")
+        .master("spark://spark-master:7077")
+        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.sql.streaming.checkpointLocation", CHECKPOINT_DIR)
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+    return spark
 
-pipeline = Pipeline(stages=indexers + [encoder, lbl_idx, assembler, scaler, rf])
-trained_model = pipeline.fit(hist_df)
-print("Model trained successfully.")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q1 – Stream Processing and Data Aggregation
-# ═══════════════════════════════════════════════════════════════════════════════
-# Read streaming CSV files from /data/stream/ directory
-stream_dir = "/data/stream"
-os.makedirs(stream_dir.replace("/data", "/tmp/data"), exist_ok=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# SCHEMA
+# ─────────────────────────────────────────────────────────────────────────────
+def get_schema():
+    return StructType([
+        StructField("age", IntegerType()),
+        StructField("job", StringType()),
+        StructField("marital", StringType()),
+        StructField("education", StringType()),
+        StructField("default", StringType()),
+        StructField("balance", IntegerType()),
+        StructField("housing", StringType()),
+        StructField("loan", StringType()),
+        StructField("contact", StringType()),
+        StructField("day", IntegerType()),
+        StructField("month", StringType()),
+        StructField("duration", IntegerType()),
+        StructField("campaign", IntegerType()),
+        StructField("pdays", IntegerType()),
+        StructField("previous", IntegerType()),
+        StructField("poutcome", StringType()),
+        StructField("y", StringType()),
+        StructField("event_time", TimestampType())
+    ])
 
-stream_df = spark \
-    .readStream \
-    .schema(SCHEMA) \
-    .option("header", "true") \
-    .option("maxFilesPerTrigger", 1) \
-    .csv(stream_dir)
 
-# Q1 – Avg balance and duration aggregated by job
-agg_query = stream_df \
-    .groupBy("job") \
-    .agg(
-        F.round(F.avg("balance"), 2).alias("avg_balance"),
-        F.round(F.avg("duration"), 2).alias("avg_duration"),
-        F.count("*").alias("transaction_count")
-    ) \
-    .writeStream \
-    .outputMode("complete") \
-    .format("console") \
-    .option("truncate", False) \
-    .trigger(processingTime="5 seconds") \
-    .queryName("job_aggregation") \
-    .start()
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL TRAINING (BATCH)
+# ─────────────────────────────────────────────────────────────────────────────
+def train_model(spark):
+    print("\n=== Training ML model (batch mode) ===")
 
-print("Q1 – Real-time aggregation by job started.")
+    df = spark.read.csv(DATA_PATH, header=True, inferSchema=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q2 – Real-Time Model Predictions
-# ═══════════════════════════════════════════════════════════════════════════════
-# Apply trained model to stream (batch-mode transform within foreachBatch)
-def predict_batch(batch_df, epoch_id):
-    if batch_df.count() == 0:
-        return
-    batch_df = batch_df.withColumn("pdays",
-        F.when(F.col("pdays") == -1, 0).otherwise(F.col("pdays")))
-    predictions = trained_model.transform(batch_df)
-    print(f"\n--- Epoch {epoch_id}: Real-Time Predictions ---")
-    predictions.select(
-        "age", "job", "balance", "duration",
-        F.col("prediction").cast("int").alias("pred_subscribe"),
-        F.round(F.element_at(F.col("probability"), 2), 3).alias("confidence")
-    ).show(10, truncate=False)
+    # Fix pdays
+    df = df.withColumn(
+        "pdays",
+        F.when(F.col("pdays") == -1, 0).otherwise(F.col("pdays"))
+    )
 
-predict_query = stream_df \
-    .writeStream \
-    .foreachBatch(predict_batch) \
-    .trigger(processingTime="5 seconds") \
-    .queryName("real_time_predictions") \
-    .start()
+    # Pipeline
+    indexers = [
+        StringIndexer(inputCol=c, outputCol=f"{c}_idx", handleInvalid="keep")
+        for c in CAT_COLS
+    ]
 
-print("Q2 – Real-time predictions started.")
+    encoder = OneHotEncoder(
+        inputCols=[f"{c}_idx" for c in CAT_COLS],
+        outputCols=[f"{c}_ohe" for c in CAT_COLS]
+    )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q3 – Window Operations and Trend Analysis
-# ═══════════════════════════════════════════════════════════════════════════════
-# Add synthetic event_time if not present
-stream_with_time = stream_df.withColumn(
-    "event_time",
-    F.coalesce(F.col("event_time"), F.current_timestamp())
-)
+    label_indexer = StringIndexer(inputCol="y", outputCol="label")
 
-window_query = stream_with_time \
-    .groupBy(
-        F.window(F.col("event_time"), "1 minute", "10 seconds")
-    ) \
-    .agg(
-        F.count("*").alias("transaction_count"),
-        F.round(F.avg("balance"), 2).alias("avg_balance")
-    ) \
-    .writeStream \
-    .outputMode("update") \
-    .format("console") \
-    .option("truncate", False) \
-    .trigger(processingTime="10 seconds") \
-    .queryName("window_trends") \
-    .start()
+    assembler = VectorAssembler(
+        inputCols=[f"{c}_ohe" for c in CAT_COLS] + NUM_COLS,
+        outputCol="features_raw"
+    )
 
-print("Q3 – Window operations (1 min / 10 sec slide) started.")
+    scaler = StandardScaler(
+        inputCol="features_raw",
+        outputCol="features",
+        withMean=False,
+        withStd=True
+    )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q4 – Handling Late and Out-of-Order Data (Watermarking)
-# ═══════════════════════════════════════════════════════════════════════════════
-watermark_query = stream_with_time \
-    .withWatermark("event_time", "30 seconds") \
-    .groupBy(
-        F.window(F.col("event_time"), "1 minute", "30 seconds"),
-        F.col("job")
-    ) \
-    .agg(
-        F.count("*").alias("count"),
-        F.round(F.avg("balance"), 2).alias("avg_balance")
-    ) \
-    .writeStream \
-    .outputMode("update") \
-    .format("console") \
-    .option("truncate", False) \
-    .trigger(processingTime="10 seconds") \
-    .queryName("watermark_late_data") \
-    .start()
+    rf = RandomForestClassifier(
+        labelCol="label",
+        featuresCol="features",
+        numTrees=50,
+        maxDepth=5,
+        seed=42
+    )
 
-print("Q4 – Watermark (30s) for late/out-of-order data started.")
-print("\n=== All streaming queries running. Press Ctrl-C to stop. ===")
-print("=== Run stream_simulator.py in another terminal to feed data. ===")
+    pipeline = Pipeline(
+        stages=indexers + [encoder, label_indexer, assembler, scaler, rf]
+    )
 
-# Wait for all streams
-spark.streams.awaitAnyTermination()
+    model = pipeline.fit(df)
+    print("Model training complete.")
+
+    return model
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STREAM SOURCE
+# ─────────────────────────────────────────────────────────────────────────────
+def create_stream(spark):
+    os.makedirs(STREAM_DIR.replace("/data", "/tmp/data"), exist_ok=True)
+
+    return (
+        spark.readStream
+        .schema(get_schema())
+        .option("header", "true")
+        .option("maxFilesPerTrigger", 1)
+        .csv(STREAM_DIR)
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Q1: REAL-TIME AGGREGATION
+# ─────────────────────────────────────────────────────────────────────────────
+def start_aggregation_query(stream_df):
+    print("Starting real-time aggregation...")
+
+    return (
+        stream_df.groupBy("job")
+        .agg(
+            F.round(F.avg("balance"), 2).alias("avg_balance"),
+            F.round(F.avg("duration"), 2).alias("avg_duration"),
+            F.count("*").alias("transaction_count")
+        )
+        .writeStream
+        .outputMode("complete")
+        .format("console")
+        .option("truncate", False)
+        .trigger(processingTime="5 seconds")
+        .queryName("job_aggregation")
+        .start()
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Q2: REAL-TIME ML PREDICTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+def start_prediction_query(stream_df, model):
+
+    def predict_batch(batch_df, epoch_id):
+        if batch_df.count() == 0:
+            return
+
+        batch_df = batch_df.withColumn(
+            "pdays",
+            F.when(F.col("pdays") == -1, 0).otherwise(F.col("pdays"))
+        )
+
+        preds = model.transform(batch_df)
+
+        print(f"\n--- Batch {epoch_id} Predictions ---")
+        preds.select(
+            "age", "job", "balance",
+            F.col("prediction").cast("int").alias("prediction"),
+            F.round(F.element_at("probability", 2), 3).alias("confidence")
+        ).show(10, truncate=False)
+
+    return (
+        stream_df.writeStream
+        .foreachBatch(predict_batch)
+        .trigger(processingTime="5 seconds")
+        .queryName("ml_predictions")
+        .start()
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Q3: WINDOW ANALYTICS
+# ─────────────────────────────────────────────────────────────────────────────
+def start_window_query(stream_df):
+    print("Starting window analytics...")
+
+    df = stream_df.withColumn(
+        "event_time",
+        F.coalesce(F.col("event_time"), F.current_timestamp())
+    )
+
+    return (
+        df.groupBy(F.window("event_time", "1 minute", "10 seconds"))
+        .agg(
+            F.count("*").alias("count"),
+            F.round(F.avg("balance"), 2).alias("avg_balance")
+        )
+        .writeStream
+        .outputMode("update")
+        .format("console")
+        .trigger(processingTime="10 seconds")
+        .queryName("window_analysis")
+        .start()
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Q4: WATERMARK HANDLING
+# ─────────────────────────────────────────────────────────────────────────────
+def start_watermark_query(stream_df):
+    print("Starting watermark handling...")
+
+    df = stream_df.withColumn(
+        "event_time",
+        F.coalesce(F.col("event_time"), F.current_timestamp())
+    )
+
+    return (
+        df.withWatermark("event_time", "30 seconds")
+        .groupBy(
+            F.window("event_time", "1 minute", "30 seconds"),
+            "job"
+        )
+        .agg(
+            F.count("*").alias("count"),
+            F.round(F.avg("balance"), 2).alias("avg_balance")
+        )
+        .writeStream
+        .outputMode("update")
+        .format("console")
+        .trigger(processingTime="10 seconds")
+        .queryName("watermark_query")
+        .start()
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    spark = create_spark()
+
+    model = train_model(spark)
+    stream_df = create_stream(spark)
+
+    q1 = start_aggregation_query(stream_df)
+    q2 = start_prediction_query(stream_df, model)
+    q3 = start_window_query(stream_df)
+    q4 = start_watermark_query(stream_df)
+
+    print("\n=== All streaming queries started ===")
+    print("Run stream_simulator.py to feed data")
+
+    spark.streams.awaitAnyTermination()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,220 +1,276 @@
 """
-SPARK ML – Banking Term Deposit Prediction
-Covers all Machine Learning with Spark ML questions from the project.
+SPARK ML PIPELINE – Banking Term Deposit Prediction (Refactored)
 
-Run:
-  docker exec spark-master spark-submit \
-    --master spark://spark-master:7077 \
-    /app/spark_ml/spark_ml.py
+Covers:
+- Data loading
+- Preprocessing
+- Feature engineering
+- Model training & evaluation
+- Hyperparameter tuning
+- Feature importance analysis
 """
 
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
+from pyspark.sql import SparkSession, functions as F
 from pyspark.ml import Pipeline
 from pyspark.ml.feature import (
-    StringIndexer, OneHotEncoder, VectorAssembler, StandardScaler
+    StringIndexer, OneHotEncoder,
+    VectorAssembler, StandardScaler
 )
-from pyspark.ml.classification import (
-    RandomForestClassifier, LogisticRegression, DecisionTreeClassifier
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.evaluation import (
+    BinaryClassificationEvaluator,
+    MulticlassClassificationEvaluator
 )
-from pyspark.ml.evaluation import BinaryClassificationEvaluator, MulticlassClassificationEvaluator
 from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
 
-# ─── Spark Session ────────────────────────────────────────────────────────────
-spark = SparkSession.builder \
-    .appName("BankingSparkML") \
-    .master("spark://spark-master:7077") \
-    .config("spark.sql.shuffle.partitions", "8") \
-    .getOrCreate()
-spark.sparkContext.setLogLevel("WARN")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q1 – Data Loading and Initial Exploration
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("Q1 – Data Loading and Initial Exploration")
-print("="*60)
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────────────────────────────────────
+DATA_PATH = "/data/bank.csv"
 
-df = spark.read.csv("/data/bank.csv", header=True, inferSchema=True)
-df.printSchema()
-df.show(5)
-print(f"Total rows: {df.count()}")
+CATEGORICAL_COLS = [
+    "job", "marital", "education", "default",
+    "housing", "loan", "contact", "month", "poutcome"
+]
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q2 – Data Preprocessing
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("Q2 – Data Preprocessing")
-print("="*60)
+NUMERIC_COLS = [
+    "age", "balance", "day", "duration",
+    "campaign", "pdays", "previous"
+]
 
-# Check and handle missing values
-print("\n--- Missing value counts ---")
-for col_name in df.columns:
-    null_count = df.filter(F.col(col_name).isNull()).count()
-    if null_count > 0:
-        print(f"  {col_name}: {null_count} nulls")
-print("  (No nulls found - dataset is clean)")
-
-# Handle outliers in 'balance' using IQR method
-q1, q3 = df.approxQuantile("balance", [0.25, 0.75], 0.01)
-iqr = q3 - q1
-lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-print(f"\nBalance IQR bounds: [{lower:.1f}, {upper:.1f}]")
-outliers = df.filter((F.col("balance") < lower) | (F.col("balance") > upper)).count()
-print(f"Outlier rows: {outliers}")
-
-# Cap outliers (winsorize) instead of dropping
-df = df.withColumn("balance",
-    F.when(F.col("balance") < lower, lower)
-     .when(F.col("balance") > upper, upper)
-     .otherwise(F.col("balance")))
-
-# Handle pdays=-1 (not contacted) → replace with 0 for modelling
-df = df.withColumn("pdays", F.when(F.col("pdays") == -1, 0).otherwise(F.col("pdays")))
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q3 – Feature Engineering and Data Transformation
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("Q3 – Feature Engineering and VectorAssembler")
-print("="*60)
-
-CATEGORICAL_COLS = ["job", "marital", "education", "default", "housing",
-                    "loan", "contact", "month", "poutcome"]
-NUMERIC_COLS = ["age", "balance", "day", "duration", "campaign", "pdays", "previous"]
 TARGET_COL = "y"
 
-# StringIndexer for all categoricals
-indexers = [StringIndexer(inputCol=c, outputCol=c + "_idx", handleInvalid="keep")
-            for c in CATEGORICAL_COLS]
 
-# OneHotEncoder
-encoder = OneHotEncoder(
-    inputCols=[c + "_idx" for c in CATEGORICAL_COLS],
-    outputCols=[c + "_ohe" for c in CATEGORICAL_COLS]
-)
+# ─────────────────────────────────────────────────────────────────────────────
+# SPARK SESSION
+# ─────────────────────────────────────────────────────────────────────────────
+def create_spark():
+    spark = (
+        SparkSession.builder
+        .appName("BankingSparkML")
+        .master("spark://spark-master:7077")
+        .config("spark.sql.shuffle.partitions", "8")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+    return spark
 
-# Target label indexer
-label_indexer = StringIndexer(inputCol=TARGET_COL, outputCol="label")
 
-# Assemble all features
-feature_cols = [c + "_ohe" for c in CATEGORICAL_COLS] + NUMERIC_COLS
-assembler = VectorAssembler(inputCols=feature_cols, outputCol="features_raw")
-scaler = StandardScaler(inputCol="features_raw", outputCol="features",
-                        withMean=False, withStd=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA LOADING
+# ─────────────────────────────────────────────────────────────────────────────
+def load_data(spark):
+    print("\n=== Q1: Data Loading ===")
 
-print(f"Feature columns: {len(feature_cols)} total")
+    df = spark.read.csv(DATA_PATH, header=True, inferSchema=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q4 – Model Training and Selection
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("Q4 – Model Training (Random Forest + Logistic Regression)")
-print("="*60)
+    df.printSchema()
+    df.show(5)
+    print(f"Total rows: {df.count()}")
 
-# Random Forest chosen for:
-#  - Handles mixed numeric/categorical well
-#  - Provides feature importances
-#  - Robust to outliers
-#  - Ensemble reduces overfitting
-rf = RandomForestClassifier(
-    labelCol="label", featuresCol="features",
-    numTrees=100, maxDepth=5, seed=42
-)
+    return df
 
-# Build pipeline
-pipeline_rf = Pipeline(stages=indexers + [encoder, label_indexer, assembler, scaler, rf])
 
-train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
-print(f"Train size: {train_df.count()}  |  Test size: {test_df.count()}")
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA PREPROCESSING
+# ─────────────────────────────────────────────────────────────────────────────
+def preprocess_data(df):
+    print("\n=== Q2: Data Preprocessing ===")
 
-print("\nTraining Random Forest ...")
-model_rf = pipeline_rf.fit(train_df)
-print("Training complete.")
+    # Check missing values
+    print("\nMissing values:")
+    for col_name in df.columns:
+        count = df.filter(F.col(col_name).isNull()).count()
+        if count > 0:
+            print(f"{col_name}: {count}")
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q5 – Model Evaluation
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("Q5 – Model Evaluation")
-print("="*60)
+    # Handle outliers (IQR method)
+    q1, q3 = df.approxQuantile("balance", [0.25, 0.75], 0.01)
+    iqr = q3 - q1
+    lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
 
-predictions = model_rf.transform(test_df)
+    print(f"\nBalance bounds: [{lower:.2f}, {upper:.2f}]")
 
-auc_eval = BinaryClassificationEvaluator(
-    labelCol="label", rawPredictionCol="rawPrediction", metricName="areaUnderROC")
-acc_eval = MulticlassClassificationEvaluator(
-    labelCol="label", predictionCol="prediction", metricName="accuracy")
-f1_eval = MulticlassClassificationEvaluator(
-    labelCol="label", predictionCol="prediction", metricName="f1")
+    df = df.withColumn(
+        "balance",
+        F.when(F.col("balance") < lower, lower)
+         .when(F.col("balance") > upper, upper)
+         .otherwise(F.col("balance"))
+    )
 
-auc = auc_eval.evaluate(predictions)
-acc = acc_eval.evaluate(predictions)
-f1  = f1_eval.evaluate(predictions)
+    # Replace invalid pdays
+    df = df.withColumn(
+        "pdays",
+        F.when(F.col("pdays") == -1, 0).otherwise(F.col("pdays"))
+    )
 
-print(f"\n  AUC-ROC  : {auc:.4f}")
-print(f"  Accuracy : {acc:.4f}")
-print(f"  F1 Score : {f1:.4f}")
+    return df
 
-# Confusion matrix
-print("\n--- Confusion Matrix ---")
-predictions.groupBy("label", "prediction").count().orderBy("label", "prediction").show()
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q6 – Hyperparameter Tuning
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("Q6 – Hyperparameter Tuning (CrossValidator + ParamGridBuilder)")
-print("="*60)
+# ─────────────────────────────────────────────────────────────────────────────
+# FEATURE ENGINEERING
+# ─────────────────────────────────────────────────────────────────────────────
+def build_pipeline(classifier):
+    """Create ML pipeline with preprocessing + model."""
 
-rf_tuned = RandomForestClassifier(
-    labelCol="label", featuresCol="features", seed=42
-)
-pipeline_tuned = Pipeline(
-    stages=indexers + [encoder, label_indexer, assembler, scaler, rf_tuned]
-)
+    indexers = [
+        StringIndexer(inputCol=col, outputCol=f"{col}_idx", handleInvalid="keep")
+        for col in CATEGORICAL_COLS
+    ]
 
-param_grid = (ParamGridBuilder()
-    .addGrid(rf_tuned.numTrees, [50, 100])
-    .addGrid(rf_tuned.maxDepth, [4, 6])
-    .build()
-)
+    encoder = OneHotEncoder(
+        inputCols=[f"{col}_idx" for col in CATEGORICAL_COLS],
+        outputCols=[f"{col}_ohe" for col in CATEGORICAL_COLS]
+    )
 
-cv = CrossValidator(
-    estimator=pipeline_tuned,
-    estimatorParamMaps=param_grid,
-    evaluator=auc_eval,
-    numFolds=3,
-    seed=42
-)
+    label_indexer = StringIndexer(inputCol=TARGET_COL, outputCol="label")
 
-print("Running 3-fold cross-validation (4 param combinations) ...")
-cv_model = cv.fit(train_df)
-print(f"Best AUC (CV): {max(cv_model.avgMetrics):.4f}")
+    assembler = VectorAssembler(
+        inputCols=[f"{col}_ohe" for col in CATEGORICAL_COLS] + NUMERIC_COLS,
+        outputCol="features_raw"
+    )
 
-best_predictions = cv_model.transform(test_df)
-print(f"Best model test AUC: {auc_eval.evaluate(best_predictions):.4f}")
+    scaler = StandardScaler(
+        inputCol="features_raw",
+        outputCol="features",
+        withMean=False,
+        withStd=True
+    )
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Q7 – Feature Importances
-# ═══════════════════════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("Q7 – Feature Importances")
-print("="*60)
+    return Pipeline(
+        stages=indexers + [encoder, label_indexer, assembler, scaler, classifier]
+    )
 
-best_rf_model = cv_model.bestModel.stages[-1]  # last stage = RF model
-importances = best_rf_model.featureImportances.toArray()
 
-# Map back to approximate feature names
-all_feature_names = (
-    [c + "_ohe" for c in CATEGORICAL_COLS] + NUMERIC_COLS
-)
-# Show top 10
-indexed = sorted(enumerate(importances), key=lambda x: x[1], reverse=True)[:10]
-print("\nTop 10 feature importances:")
-for rank, (idx, imp) in enumerate(indexed, 1):
-    name = all_feature_names[idx] if idx < len(all_feature_names) else f"feature_{idx}"
-    print(f"  {rank:2}. {name:<25} {imp:.4f}")
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL TRAINING
+# ─────────────────────────────────────────────────────────────────────────────
+def train_model(df):
+    print("\n=== Q3: Model Training ===")
 
-spark.stop()
-print("\n=== Spark ML complete ===")
+    train_df, test_df = df.randomSplit([0.8, 0.2], seed=42)
+    print(f"Train: {train_df.count()} | Test: {test_df.count()}")
+
+    rf = RandomForestClassifier(
+        labelCol="label",
+        featuresCol="features",
+        numTrees=100,
+        maxDepth=5,
+        seed=42
+    )
+
+    pipeline = build_pipeline(rf)
+
+    print("Training Random Forest...")
+    model = pipeline.fit(train_df)
+
+    return model, train_df, test_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODEL EVALUATION
+# ─────────────────────────────────────────────────────────────────────────────
+def evaluate_model(model, test_df):
+    print("\n=== Q4: Model Evaluation ===")
+
+    preds = model.transform(test_df)
+
+    auc_eval = BinaryClassificationEvaluator(
+        labelCol="label", rawPredictionCol="rawPrediction"
+    )
+    acc_eval = MulticlassClassificationEvaluator(
+        labelCol="label", predictionCol="prediction", metricName="accuracy"
+    )
+    f1_eval = MulticlassClassificationEvaluator(
+        labelCol="label", predictionCol="prediction", metricName="f1"
+    )
+
+    auc = auc_eval.evaluate(preds)
+    acc = acc_eval.evaluate(preds)
+    f1 = f1_eval.evaluate(preds)
+
+    print(f"AUC  : {auc:.4f}")
+    print(f"ACC  : {acc:.4f}")
+    print(f"F1   : {f1:.4f}")
+
+    print("\nConfusion Matrix:")
+    preds.groupBy("label", "prediction").count().show()
+
+    return auc_eval, preds
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HYPERPARAMETER TUNING
+# ─────────────────────────────────────────────────────────────────────────────
+def tune_model(train_df, evaluator):
+    print("\n=== Q5: Hyperparameter Tuning ===")
+
+    rf = RandomForestClassifier(labelCol="label", featuresCol="features", seed=42)
+    pipeline = build_pipeline(rf)
+
+    param_grid = (
+        ParamGridBuilder()
+        .addGrid(rf.numTrees, [50, 100])
+        .addGrid(rf.maxDepth, [4, 6])
+        .build()
+    )
+
+    cv = CrossValidator(
+        estimator=pipeline,
+        estimatorParamMaps=param_grid,
+        evaluator=evaluator,
+        numFolds=3
+    )
+
+    print("Running Cross Validation...")
+    model = cv.fit(train_df)
+
+    print(f"Best CV AUC: {max(model.avgMetrics):.4f}")
+    return model
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FEATURE IMPORTANCE
+# ─────────────────────────────────────────────────────────────────────────────
+def show_feature_importance(cv_model):
+    print("\n=== Q6: Feature Importance ===")
+
+    rf_model = cv_model.bestModel.stages[-1]
+    importances = rf_model.featureImportances.toArray()
+
+    feature_names = [f"{col}_ohe" for col in CATEGORICAL_COLS] + NUMERIC_COLS
+
+    ranked = sorted(
+        enumerate(importances),
+        key=lambda x: x[1],
+        reverse=True
+    )[:10]
+
+    print("\nTop 10 Features:")
+    for i, (idx, score) in enumerate(ranked, 1):
+        name = feature_names[idx] if idx < len(feature_names) else f"f_{idx}"
+        print(f"{i:2}. {name:<25} {score:.4f}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN EXECUTION
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    spark = create_spark()
+
+    df = load_data(spark)
+    df = preprocess_data(df)
+
+    model, train_df, test_df = train_model(df)
+    evaluator, preds = evaluate_model(model, test_df)
+
+    tuned_model = tune_model(train_df, evaluator)
+    show_feature_importance(tuned_model)
+
+    spark.stop()
+    print("\n=== Spark ML Pipeline Completed ===")
+
+
+if __name__ == "__main__":
+    main()
